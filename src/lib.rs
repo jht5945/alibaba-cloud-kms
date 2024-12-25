@@ -1,10 +1,10 @@
+use aliyun_openapi_core_rust_sdk::client::error::Error as AliyunClientError;
 use aliyun_openapi_core_rust_sdk::client::rpc::RPClient;
 use serde::{Deserialize, Serialize};
-use std::error::Error;
 use std::sync::RwLock;
 use std::time::Duration;
 
-type KmsResult<T> = Result<T, Box<dyn Error>>;
+type KmsResult<T> = Result<T, AliyunClientError>;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 5;
 const DEFAULT_KMS_API_VERSION: &str = "2016-01-20";

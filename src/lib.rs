@@ -11,9 +11,15 @@ type KmsResult<T> = Result<T, AliyunClientError>;
 const DEFAULT_TIMEOUT_SECS: u64 = 5;
 const DEFAULT_KMS_API_VERSION: &str = "2016-01-20";
 
+#[cfg(not(feature = "use-meta-server-local-host"))]
+const DEFAULT_META_SERVER_HOST: &str = "100.100.100.200";
+#[cfg(feature = "use-meta-server-local-host")]
+const DEFAULT_META_SERVER_HOST: &str = "127.0.0.1";
+
 const ENV_KMS_ACCESS_KEY_ID: &str = "KMS_ACCESS_KEY_ID";
 const ENV_KMS_ACCESS_KEY_SECRET: &str = "KMS_ACCESS_KEY_SECRET";
 const ENV_KMS_SECURITY_TOKEN: &str = "KMS_SECURITY_TOKEN";
+const ENV_KMS_ECS_SECURITY_HARDEN: &str = "KMS_ECS_SECURITY_HARDEN";
 const ENV_KMS_ECS_RAM_ROLE: &str = "KMS_ECS_RAM_ROLE";
 
 #[derive(Default, Debug, Serialize, Deserialize)]
@@ -220,6 +226,11 @@ impl CredentialConfig {
         let kms_ecs_ram_role = std::env::var(ENV_KMS_ECS_RAM_ROLE).ok();
         if kms_ecs_ram_role.is_some() {
             return Some(Self {
+                ecs_security_harden: std::env::var(ENV_KMS_ECS_SECURITY_HARDEN)
+                    .as_deref()
+                    .map(|s| s.to_lowercase())
+                    .map(|s| s == "1" || s == "true" || s == "yes" || s == "on")
+                    .ok(),
                 ecs_ram_role: kms_ecs_ram_role,
                 ..Default::default()
             });
@@ -275,10 +286,12 @@ async fn fetch_ecs_ram_role_sts(
         Err(e) => return Err(AliyunClientError::Reqwest(e)),
     };
     let security_credentials_token = if ecs_security_harden {
-        let security_credentials_token_url = "http://100.100.100.200/latest/api/token";
+        let security_credentials_token_url =
+            format!("http://{}/latest/api/token", DEFAULT_META_SERVER_HOST);
         let security_credentials_token_response_result = client
             .put(security_credentials_token_url)
             .header("X-aliyun-ecs-metadata-token-ttl-seconds", "3600")
+            .timeout(Duration::from_secs(5))
             .send()
             .await;
         let security_credentials_token_response = match security_credentials_token_response_result {
@@ -294,15 +307,18 @@ async fn fetch_ecs_ram_role_sts(
     };
 
     let security_credentials_url = format!(
-        "http://100.100.100.200/latest/meta-data/ram/security-credentials/{}",
-        ecs_ram_role
+        "http://{}/latest/meta-data/ram/security-credentials/{}",
+        DEFAULT_META_SERVER_HOST, ecs_ram_role
     );
     let mut security_credentials_request_builder = client.get(security_credentials_url);
     if let Some(security_credentials_token) = &security_credentials_token {
         security_credentials_request_builder = security_credentials_request_builder
             .header("X-aliyun-ecs-metadata-token", security_credentials_token);
     }
-    let security_credentials_response_result = security_credentials_request_builder.send().await;
+    let security_credentials_response_result = security_credentials_request_builder
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await;
     let security_credentials_response = match security_credentials_response_result {
         Ok(response) => response,
         Err(e) => return Err(AliyunClientError::Reqwest(e)),

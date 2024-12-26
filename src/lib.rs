@@ -1,8 +1,10 @@
 use aliyun_openapi_core_rust_sdk::client::error::Error as AliyunClientError;
 use aliyun_openapi_core_rust_sdk::client::rpc::RPClient;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::RwLock;
 use std::time::Duration;
+use std::time::SystemTime;
 
 type KmsResult<T> = Result<T, AliyunClientError>;
 
@@ -48,6 +50,17 @@ pub struct GetSecretValueVersionStages {
     pub version_stage: Vec<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct GetRamSecurityCredentialsResponse {
+    pub access_key_id: String,
+    pub access_key_secret: String,
+    pub expiration: String,
+    pub security_token: String,
+    pub last_updated: String,
+    pub code: String,
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct KmsClient {
     pub endpoint: Option<String>,
@@ -85,7 +98,7 @@ impl KmsClient {
         &self,
         request: GetSecretValueRequest,
     ) -> KmsResult<GetSecretValueResponse> {
-        let (kms_client, credential_config) = self.build_rpc_client()?;
+        let (kms_client, credential_config) = self.build_rpc_client().await?;
         let mut queries = vec![];
         if let Some(security_token) = &credential_config.security_token {
             queries.push(("???", security_token.as_str()));
@@ -113,13 +126,13 @@ impl KmsClient {
         Ok(serde_json::from_str(&response_text).unwrap())
     }
 
-    fn build_rpc_client(&self) -> KmsResult<(RPClient, CredentialConfig)> {
+    async fn build_rpc_client(&self) -> KmsResult<(RPClient, CredentialConfig)> {
         let endpoint = match &self.endpoint {
             Some(endpoint) => endpoint,
             None => todo!(""),
         };
 
-        let credential_config = self.credential_config.provider_credential_config();
+        let credential_config = self.credential_config.provider_credential_config().await?;
         let (access_key_id, access_key_secret) = match (
             &credential_config.access_key_id,
             &credential_config.access_key_secret,
@@ -139,21 +152,25 @@ impl KmsClient {
 
 #[derive(Default, Debug)]
 pub struct CredentialConfig {
-    cached_credential_config: Option<RwLock<Box<CredentialConfig>>>,
+    // JUST FOR TESTING
+    cached_credential_config: RwLock<Option<(u128, Box<CredentialConfig>)>>,
 
     pub access_key_id: Option<String>,
     pub access_key_secret: Option<String>,
     pub security_token: Option<String>,
+
+    pub ecs_security_harden: Option<bool>,
     pub ecs_ram_role: Option<String>,
 }
 
 impl Clone for CredentialConfig {
     fn clone(&self) -> Self {
         Self {
-            cached_credential_config: None,
+            cached_credential_config: RwLock::new(None),
             access_key_id: self.access_key_id.clone(),
             access_key_secret: self.access_key_secret.clone(),
             security_token: self.security_token.clone(),
+            ecs_security_harden: self.ecs_security_harden.clone(),
             ecs_ram_role: self.ecs_ram_role.clone(),
         }
     }
@@ -210,13 +227,104 @@ impl CredentialConfig {
         None
     }
 
-    pub fn provider_credential_config(&self) -> Self {
-        if let Some(_ecs_ram_role) = &self.ecs_ram_role {
-            todo!("TOBE IMPLEMENTED.")
-        } else {
-            self.clone()
+    pub async fn provider_credential_config(&self) -> KmsResult<Self> {
+        let current_millis = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        {
+            let config = self.cached_credential_config.read().unwrap();
+            if let Some(config) = &*config {
+                if config.0 < current_millis {
+                    return Ok(*config.1.clone());
+                }
+            }
         }
+
+        let (expire, credential_config) = if let Some(ecs_ram_role) = &self.ecs_ram_role {
+            let ecs_security_harden = self.ecs_security_harden.unwrap_or(false);
+            let ram_security_credentials =
+                fetch_ecs_ram_role_sts(ecs_ram_role, ecs_security_harden).await?;
+            (
+                current_millis + (1800 * 1000),
+                CredentialConfig {
+                    access_key_id: Some(ram_security_credentials.access_key_id),
+                    access_key_secret: Some(ram_security_credentials.access_key_secret),
+                    security_token: Some(ram_security_credentials.security_token),
+                    ..Default::default()
+                },
+            )
+        } else {
+            (u128::MAX, self.clone())
+        };
+        {
+            let mut config = self.cached_credential_config.write().unwrap();
+            *config = Some((expire, Box::new(credential_config.clone())));
+        }
+        Ok(credential_config)
     }
+}
+
+// reference: https://www.alibabacloud.com/help/en/ecs/user-guide/attach-an-instance-ram-role-to-an-ecs-instance
+async fn fetch_ecs_ram_role_sts(
+    ecs_ram_role: &str,
+    ecs_security_harden: bool,
+) -> KmsResult<GetRamSecurityCredentialsResponse> {
+    let client = match Client::builder().build() {
+        Ok(client) => client,
+        Err(e) => return Err(AliyunClientError::Reqwest(e)),
+    };
+    let security_credentials_token = if ecs_security_harden {
+        let security_credentials_token_url = "http://100.100.100.200/latest/api/token";
+        let security_credentials_token_response_result = client
+            .put(security_credentials_token_url)
+            .header("X-aliyun-ecs-metadata-token-ttl-seconds", "3600")
+            .send()
+            .await;
+        let security_credentials_token_response = match security_credentials_token_response_result {
+            Ok(response) => response,
+            Err(e) => return Err(AliyunClientError::Reqwest(e)),
+        };
+        match security_credentials_token_response.text().await {
+            Ok(token) => Some(token),
+            Err(e) => return Err(AliyunClientError::Reqwest(e)),
+        }
+    } else {
+        None
+    };
+
+    let security_credentials_url = format!(
+        "http://100.100.100.200/latest/meta-data/ram/security-credentials/{}",
+        ecs_ram_role
+    );
+    let mut security_credentials_request_builder = client.get(security_credentials_url);
+    if let Some(security_credentials_token) = &security_credentials_token {
+        security_credentials_request_builder = security_credentials_request_builder
+            .header("X-aliyun-ecs-metadata-token", security_credentials_token);
+    }
+    let security_credentials_response_result = security_credentials_request_builder.send().await;
+    let security_credentials_response = match security_credentials_response_result {
+        Ok(response) => response,
+        Err(e) => return Err(AliyunClientError::Reqwest(e)),
+    };
+    let security_credentials_text = match security_credentials_response.text().await {
+        Ok(text) => text,
+        Err(e) => return Err(AliyunClientError::Reqwest(e)),
+    };
+
+    let ram_security_credential: GetRamSecurityCredentialsResponse =
+        match serde_json::from_str(&security_credentials_text) {
+            Ok(credential) => credential,
+            Err(e) => {
+                return Err(AliyunClientError::InvalidResponse {
+                    request_id: "n/a".to_string(),
+                    error_code: e.to_string(),
+                    error_message: format!("Parse RAM security credentials failed: {}", e),
+                })
+            }
+        };
+
+    Ok(ram_security_credential)
 }
 
 fn bool_to_str(b: bool) -> &'static str {

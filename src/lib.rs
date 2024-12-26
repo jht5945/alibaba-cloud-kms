@@ -2,6 +2,7 @@ use aliyun_openapi_core_rust_sdk::client::error::Error as AliyunClientError;
 use aliyun_openapi_core_rust_sdk::client::rpc::RPClient;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::sync::RwLock;
 use std::time::Duration;
 use std::time::SystemTime;
@@ -212,9 +213,9 @@ impl CredentialConfig {
     }
 
     pub fn try_from_env() -> Option<Self> {
-        let kms_access_key_id = std::env::var(ENV_KMS_ACCESS_KEY_ID).ok();
-        let kms_access_key_secret = std::env::var(ENV_KMS_ACCESS_KEY_SECRET).ok();
-        let kms_security_token = std::env::var(ENV_KMS_SECURITY_TOKEN).ok();
+        let kms_access_key_id = env::var(ENV_KMS_ACCESS_KEY_ID).ok();
+        let kms_access_key_secret = env::var(ENV_KMS_ACCESS_KEY_SECRET).ok();
+        let kms_security_token = env::var(ENV_KMS_SECURITY_TOKEN).ok();
         if kms_access_key_id.is_some() && kms_access_key_secret.is_some() {
             return Some(Self {
                 access_key_id: kms_access_key_id,
@@ -223,10 +224,10 @@ impl CredentialConfig {
                 ..Default::default()
             });
         }
-        let kms_ecs_ram_role = std::env::var(ENV_KMS_ECS_RAM_ROLE).ok();
+        let kms_ecs_ram_role = env::var(ENV_KMS_ECS_RAM_ROLE).ok();
         if kms_ecs_ram_role.is_some() {
             return Some(Self {
-                ecs_security_harden: std::env::var(ENV_KMS_ECS_SECURITY_HARDEN)
+                ecs_security_harden: env::var(ENV_KMS_ECS_SECURITY_HARDEN)
                     .as_deref()
                     .map(|s| s.to_lowercase())
                     .map(|s| s == "1" || s == "true" || s == "yes" || s == "on")

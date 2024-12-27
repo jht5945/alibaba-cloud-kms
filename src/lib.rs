@@ -2,10 +2,10 @@ use aliyun_openapi_core_rust_sdk::client::error::Error as AliyunClientError;
 use aliyun_openapi_core_rust_sdk::client::rpc::RPClient;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::sync::RwLock;
 use std::time::Duration;
 use std::time::SystemTime;
+use std::{env, fs};
 
 type KmsResult<T> = Result<T, AliyunClientError>;
 
@@ -108,8 +108,7 @@ impl KmsClient {
         let (kms_client, credential_config) = self.build_rpc_client().await?;
         let mut queries = vec![];
         if let Some(security_token) = &credential_config.security_token {
-            queries.push(("???", security_token.as_str()));
-            todo!("");
+            queries.push(("SecurityToken", security_token.as_str()));
         }
         queries.push(("SecretName", request.secret_name.as_str()));
         if let Some(version_stage) = &request.version_stage {
@@ -136,7 +135,11 @@ impl KmsClient {
     async fn build_rpc_client(&self) -> KmsResult<(RPClient, CredentialConfig)> {
         let endpoint = match &self.endpoint {
             Some(endpoint) => endpoint,
-            None => todo!(""),
+            None => {
+                return Err(AliyunClientError::InvalidRequest(
+                    "Endpoint is not set".to_string(),
+                ))
+            }
         };
 
         let credential_config = self.credential_config.provider_credential_config().await?;
@@ -145,7 +148,11 @@ impl KmsClient {
             &credential_config.access_key_secret,
         ) {
             (Some(access_key_id), Some(access_key_secret)) => (access_key_id, access_key_secret),
-            _ => todo!(""),
+            _ => {
+                return Err(AliyunClientError::InvalidRequest(
+                    "Access key ID and access key secret should both set".to_string(),
+                ))
+            }
         };
         let timeout = self
             .timeout
@@ -157,7 +164,7 @@ impl KmsClient {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Deserialize)]
 pub struct CredentialConfig {
     // JUST FOR TESTING
     cached_credential_config: RwLock<Option<(u128, Box<CredentialConfig>)>>,
@@ -210,6 +217,43 @@ impl CredentialConfig {
             ecs_ram_role: Some(ecs_ram_role.into()),
             ..Default::default()
         }
+    }
+
+    pub fn try_from_default(config_file: Option<&str>) -> KmsResult<Option<Self>> {
+        if let Some(config) = Self::try_from_env() {
+            return Ok(Some(config));
+        }
+        if let Some(config_file) = config_file {
+            if let Some(config) = Self::try_from_config(config_file)? {
+                return Ok(Some(config));
+            }
+        }
+        Self::try_from_config("/etc/alibaba-cloud-kms/config.json")
+    }
+
+    pub fn try_from_config(config_file: &str) -> KmsResult<Option<Self>> {
+        if fs::metadata(config_file).is_err() {
+            return Ok(None);
+        }
+        let config_content = match fs::read_to_string(config_file) {
+            Ok(config_content) => config_content,
+            Err(e) => {
+                return Err(AliyunClientError::InvalidRequest(format!(
+                    "Read config: {} failed: {}",
+                    config_file, e
+                )))
+            }
+        };
+        let config: Self = match serde_json::from_str(&config_content) {
+            Ok(config) => config,
+            Err(e) => {
+                return Err(AliyunClientError::InvalidRequest(format!(
+                    "Bad config: {} error: {}",
+                    config_file, e
+                )))
+            }
+        };
+        Ok(Some(config))
     }
 
     pub fn try_from_env() -> Option<Self> {
@@ -336,7 +380,10 @@ async fn fetch_ecs_ram_role_sts(
                 return Err(AliyunClientError::InvalidResponse {
                     request_id: "n/a".to_string(),
                     error_code: e.to_string(),
-                    error_message: format!("Parse RAM security credentials failed: {}", e),
+                    error_message: format!(
+                        "Parse RAM security credentials failed: {}, security credentials: {}",
+                        e, security_credentials_text
+                    ),
                 })
             }
         };

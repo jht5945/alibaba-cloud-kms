@@ -23,6 +23,50 @@ const ENV_KMS_SECURITY_TOKEN: &str = "KMS_SECURITY_TOKEN";
 const ENV_KMS_ECS_SECURITY_HARDEN: &str = "KMS_ECS_SECURITY_HARDEN";
 const ENV_KMS_ECS_RAM_ROLE: &str = "KMS_ECS_RAM_ROLE";
 
+const DUMMY_UUID: &str = "00000000-0000-0000-0000-000000000000";
+
+#[derive(Default, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct DescribeSecretRequest {
+    pub secret_name: String,
+    pub fetch_tags: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct DescribeSecretTags {
+    pub tag: Vec<DescribeSecretTag>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct DescribeSecretTag {
+    pub tag_key: String,
+    pub tag_value: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct DescribeSecretResponse {
+    pub request_id: String,
+    pub update_time: String,
+    pub create_time: String,
+    pub next_rotation_date: Option<String>,
+    pub encryption_key_id: Option<String>,
+    pub rotation_interval: Option<String>,
+    pub arn: String,
+    pub extended_config: Option<String>,
+    pub last_rotation_date: Option<String>,
+    pub description: Option<String>,
+    pub secret_name: String,
+    pub automatic_rotation: Option<String>,
+    pub secret_type: String,
+    pub planned_delete_time: Option<String>,
+    #[serde(rename = "DKMSInstanceId")]
+    pub dkms_instance_id: Option<String>,
+    pub tags: Option<DescribeSecretTags>,
+}
+
 #[derive(Default, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct GetSecretValueRequest {
@@ -93,6 +137,29 @@ impl KmsClient {
         self
     }
 
+    // reference: https://api.aliyun.com/document/Kms/2016-01-20/DescribeSecret
+    pub async fn describe_secret(
+        &self,
+        request: DescribeSecretRequest,
+    ) -> KmsResult<DescribeSecretResponse> {
+        let (kms_client, credential_config) = self.build_rpc_client().await?;
+        let mut queries = vec![];
+        if let Some(security_token) = &credential_config.security_token {
+            queries.push(("SecurityToken", security_token.as_str()));
+        }
+        queries.push(("SecretName", request.secret_name.as_str()));
+        if let Some(fetch_tags) = &request.fetch_tags {
+            queries.push(("FetchTags", bool_to_str(*fetch_tags)));
+        }
+        let response = kms_client
+            .post("DescribeSecret")
+            .query(queries)
+            .send()
+            .await?;
+        let response_text = response.text().await?;
+        Self::parse_response(&response_text)
+    }
+
     // Err(
     //     InvalidResponse {
     //         request_id: "d58029b6-f90e-4dcd-9d75-0aeabf4a9339",
@@ -129,7 +196,21 @@ impl KmsClient {
             .send()
             .await?;
         let response_text = response.text().await?;
-        Ok(serde_json::from_str(&response_text).unwrap())
+        Self::parse_response(&response_text)
+    }
+
+    fn parse_response<'a, T: Deserialize<'a>>(response_text: &'a str) -> KmsResult<T> {
+        match serde_json::from_str(&response_text) {
+            Ok(response) => Ok(response),
+            Err(e) => Err(AliyunClientError::InvalidResponse {
+                request_id: DUMMY_UUID.to_string(),
+                error_code: "InvalidResponse".to_string(),
+                error_message: format!(
+                    "Parse response failed: {}, response: {}",
+                    e, &response_text
+                ),
+            }),
+        }
     }
 
     async fn build_rpc_client(&self) -> KmsResult<(RPClient, CredentialConfig)> {

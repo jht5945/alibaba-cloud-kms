@@ -7,7 +7,7 @@ use std::time::Duration;
 use std::time::SystemTime;
 use std::{env, fs};
 
-type KmsResult<T> = Result<T, AliyunClientError>;
+pub type KmsResult<T> = Result<T, AliyunClientError>;
 
 const DEFAULT_TIMEOUT_SECS: u64 = 5;
 const DEFAULT_KMS_API_VERSION: &str = "2016-01-20";
@@ -160,13 +160,6 @@ impl KmsClient {
         Self::parse_response(&response_text)
     }
 
-    // Err(
-    //     InvalidResponse {
-    //         request_id: "d58029b6-f90e-4dcd-9d75-0aeabf4a9339",
-    //         error_code: "Forbidden.ResourceNotFound",
-    //         error_message: "Resource not found.",
-    //     },
-    // )
     // reference: https://api.aliyun.com/document/Kms/2016-01-20/GetSecretValue
     pub async fn get_secret_value(
         &self,

@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 default = []
-use-meta-server-local-host = []
+use-meta-server-local-host-for-test = []
 
 [dependencies]
 aliyun-openapi-core-rust-sdk = "1.1.0"

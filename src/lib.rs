@@ -1,4 +1,4 @@
-use aliyun_openapi_core_rust_sdk::client::error::Error as AliyunClientError;
+pub use aliyun_openapi_core_rust_sdk::client::error::Error as AliyunClientError;
 use aliyun_openapi_core_rust_sdk::client::rpc::RPClient;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -12,9 +12,9 @@ pub type KmsResult<T> = Result<T, AliyunClientError>;
 const DEFAULT_TIMEOUT_SECS: u64 = 5;
 const DEFAULT_KMS_API_VERSION: &str = "2016-01-20";
 
-#[cfg(not(feature = "use-meta-server-local-host"))]
+#[cfg(not(feature = "use-meta-server-local-host-for-test"))]
 const DEFAULT_META_SERVER_HOST: &str = "100.100.100.200";
-#[cfg(feature = "use-meta-server-local-host")]
+#[cfg(feature = "use-meta-server-local-host-for-test")]
 const DEFAULT_META_SERVER_HOST: &str = "127.0.0.1";
 
 const ENV_KMS_ACCESS_KEY_ID: &str = "KMS_ACCESS_KEY_ID";
